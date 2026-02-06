@@ -5,28 +5,54 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
+
+// killPortProcess mata o processo que está usando a porta especificada
+func killPortProcess(port string) {
+	fmt.Printf("[CHECK] Verificando porta %s...\n", port)
+
+	if runtime.GOOS == "windows" {
+		// Windows: usar PowerShell para encontrar e matar o processo
+		psCmd := fmt.Sprintf("$p = Get-NetTCPConnection -LocalPort %s -ErrorAction SilentlyContinue; if($p) { Stop-Process -Id $p.OwningProcess -Force; Write-Host '[KILL] Processo encerrado' } else { Write-Host '[OK] Porta livre' }", port)
+		cmd := exec.Command("powershell", "-Command", psCmd)
+		output, _ := cmd.CombinedOutput()
+		fmt.Print(string(output))
+	} else {
+		// Linux/Mac: usar lsof e kill
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("kill -9 $(lsof -ti:%s) 2>/dev/null && echo '[KILL] Processo encerrado' || echo '[OK] Porta livre'", port))
+		output, _ := cmd.Output()
+		fmt.Print(string(output))
+	}
+}
 
 func main() {
 	fmt.Println("=== AgroChat - WhatsApp Bot ===")
 
+	// Liberar porta 8080 antes de iniciar
+	killPortProcess("8080")
+	time.Sleep(1 * time.Second) // Aguardar liberação da porta
+
 	// Configurar logging
 	dbLog := waLog.Stdout("Database", "INFO", true)
-	
+
 	// Criar contexto
 	ctx := context.Background()
-	
+
 	// String de conexão PostgreSQL
 	dbConnStr := "host=flutterbox port=5432 user=flutter password=4002 dbname=AgroChatDB sslmode=disable"
-	
+
 	// Criar container de armazenamento PostgreSQL
 	container, err := sqlstore.New(ctx, "postgres", dbConnStr, dbLog)
 	if err != nil {
@@ -93,5 +119,12 @@ func main() {
 func eventHandler(evt interface{}) {
 	// Aqui você pode processar os eventos recebidos
 	// Por exemplo: mensagens, status, etc.
-	fmt.Printf("Evento recebido: %T\n", evt)
+	switch v := evt.(type) {
+	case *events.Message:
+		fmt.Printf("📨 Mensagem recebida de %s: %s\n", v.Info.Sender, v.Message.GetConversation())
+	case *events.Receipt:
+		fmt.Printf("📬 Recibo: Tipo=%s, Chat=%s, IDs=%v\n", v.Type, v.Chat, v.MessageIDs)
+	default:
+		fmt.Printf("Evento recebido: %T\n", evt)
+	}
 }

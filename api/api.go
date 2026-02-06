@@ -1,11 +1,17 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.mau.fi/whatsmeow"
+	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/types"
 )
 
 type API struct {
@@ -40,7 +46,7 @@ func (api *API) setupRoutes() {
 	// Rota de health check
 	api.Router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"status": "ok",
+			"status":  "ok",
 			"message": "AgroChat API está rodando!",
 		})
 	})
@@ -50,10 +56,13 @@ func (api *API) setupRoutes() {
 	{
 		// Enviar mensagem
 		whatsapp.POST("/send", api.sendMessage)
-		
+
 		// Verificar status da conexão
 		whatsapp.GET("/status", api.getStatus)
 	}
+
+	// Endpoint principal para integração com AgroServer
+	api.Router.POST("/enviar-verificacao", api.enviarVerificacao)
 }
 
 // sendMessage envia uma mensagem via WhatsApp
@@ -68,13 +77,59 @@ func (api *API) sendMessage(c *gin.Context) {
 		return
 	}
 
-	// TODO: Implementar lógica de envio de mensagem
+	// Verificar se está conectado
+	if !api.Client.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "WhatsApp não está conectado",
+		})
+		return
+	}
+
+	// Formatar número no formato internacional
+	jid, err := api.parseJID(req.Phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Número inválido: " + err.Error()})
+		return
+	}
+
+	fmt.Printf("[SEND] Enviando mensagem para: %s (JID: %s)\n", req.Phone, jid.String())
+
+	// Verificar se o número existe no WhatsApp (apenas informativo)
+	isOnWhatsApp, err := api.Client.IsOnWhatsApp(c.Request.Context(), []string{req.Phone})
+	if err == nil && len(isOnWhatsApp) > 0 {
+		if isOnWhatsApp[0].IsIn {
+			fmt.Printf("[SUCCESS] Número confirmado no WhatsApp!\n")
+		} else {
+			fmt.Printf("[WARNING] Número NÃO está no WhatsApp! Enviando mesmo assim...\n")
+		}
+	}
+
+	fmt.Printf("[MESSAGE] Mensagem: %s\n", req.Message)
+
+	// Enviar mensagem
+	resp, err := api.Client.SendMessage(c.Request.Context(), jid, &waProto.Message{
+		Conversation: &req.Message,
+	})
+
+	if err != nil {
+		fmt.Printf("[ERROR] Erro ao enviar: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Erro ao enviar mensagem: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("[SUCCESS] Mensagem enviada! Timestamp: %v, ID: %s\n", resp.Timestamp, resp.ID)
+
 	c.JSON(http.StatusOK, gin.H{
-		"status": "success",
-		"message": "Mensagem enviada!",
+		"status":  "success",
+		"message": "Mensagem enviada com sucesso!",
 		"data": gin.H{
-			"phone": req.Phone,
-			"text":  req.Message,
+			"phone":     req.Phone,
+			"jid":       jid.String(),
+			"text":      req.Message,
+			"messageId": resp.ID,
+			"timestamp": resp.Timestamp,
 		},
 	})
 }
@@ -82,13 +137,221 @@ func (api *API) sendMessage(c *gin.Context) {
 // getStatus retorna o status da conexão do WhatsApp
 func (api *API) getStatus(c *gin.Context) {
 	isConnected := api.Client.IsConnected()
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"connected": isConnected,
 		"device": gin.H{
 			"id": api.Client.Store.ID,
 		},
 	})
+}
+
+// parseJID converte número de telefone para JID do WhatsApp
+func (api *API) parseJID(phone string) (types.JID, error) {
+	// Remover caracteres não numéricos
+	phone = strings.ReplaceAll(phone, "+", "")
+	phone = strings.ReplaceAll(phone, " ", "")
+	phone = strings.ReplaceAll(phone, "-", "")
+	phone = strings.ReplaceAll(phone, "(", "")
+	phone = strings.ReplaceAll(phone, ")", "")
+
+	fmt.Printf("[DEBUG] Número original: %s (tamanho: %d)\n", phone, len(phone))
+
+	// Se não tem código do país, adicionar 55 (Brasil)
+	if !strings.HasPrefix(phone, "55") && len(phone) >= 10 && len(phone) <= 11 {
+		// Verificar se começa com DDD brasileiro válido (11-99)
+		if len(phone) >= 2 {
+			fmt.Printf("   [FIX] Adicionando código do país 55\n")
+			fmt.Printf("   [OLD] Sem código: %s\n", phone)
+			phone = "55" + phone
+			fmt.Printf("   [NEW] Com código: %s\n", phone)
+		}
+	}
+
+	// Tratar números brasileiros - converter automaticamente para formato correto
+	if strings.HasPrefix(phone, "55") && len(phone) >= 12 {
+		ddd := phone[2:4]
+		numero := phone[4:]
+
+		fmt.Printf("   [INFO] Número BR detectado - DDD: %s, Número: %s (tamanho: %d)\n", ddd, numero, len(numero))
+
+		// Se o número tem 9 dígitos e começa com 9, remover o 9 inicial
+		if len(numero) == 9 && numero[0] == '9' {
+			numeroCorrigido := numero[1:] // Remove o primeiro 9
+			phoneCorrigido := "55" + ddd + numeroCorrigido
+			fmt.Printf("   [FIX] CORRIGINDO: 9 dígitos → 8 dígitos\n")
+			fmt.Printf("   [OLD] Formato antigo: %s\n", phone)
+			fmt.Printf("   [NEW] Formato correto: %s\n", phoneCorrigido)
+			phone = phoneCorrigido
+		} else if len(numero) == 8 {
+			fmt.Printf("   [OK] Formato correto: 8 dígitos\n")
+		} else {
+			fmt.Printf("   [WARNING] Formato não padrão: %d dígitos\n", len(numero))
+		}
+	}
+
+	// Verificar se é um número válido
+	if len(phone) < 10 {
+		return types.JID{}, fmt.Errorf("número muito curto (mínimo 10 dígitos)")
+	}
+
+	fmt.Printf("   [INFO] Número final para envio: %s\n", phone)
+	return types.NewJID(phone, types.DefaultUserServer), nil
+}
+
+// VerificacaoRequest representa a requisição de envio de verificação
+type VerificacaoRequest struct {
+	NomeCliente       string `json:"nomeCliente" binding:"required"`
+	NomeVendedor      string `json:"nomeVendedor" binding:"required"`
+	Documento         string `json:"documento" binding:"required"`
+	Telefone          string `json:"telefone" binding:"required"`
+	Endereco          string `json:"endereco"`
+	CodigoVerificacao string `json:"codigoVerificacao" binding:"required"`
+	Metodo            string `json:"metodo" binding:"required"`
+}
+
+// enviarVerificacao envia código de verificação via WhatsApp
+func (api *API) enviarVerificacao(c *gin.Context) {
+	var req VerificacaoRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"sucesso":  false,
+			"mensagem": "Dados inválidos",
+			"erro":     err.Error(),
+		})
+		return
+	}
+
+	// Validar método
+	if req.Metodo != "whatsapp" && req.Metodo != "sms" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"sucesso":  false,
+			"mensagem": "Método inválido",
+			"erro":     "Método deve ser 'whatsapp' ou 'sms'",
+		})
+		return
+	}
+
+	// Por enquanto, apenas WhatsApp está implementado
+	if req.Metodo == "sms" {
+		c.JSON(http.StatusNotImplemented, gin.H{
+			"sucesso":  false,
+			"mensagem": "SMS não implementado",
+			"erro":     "Atualmente apenas WhatsApp está disponível",
+		})
+		return
+	}
+
+	// Verificar se está conectado
+	if !api.Client.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"sucesso":  false,
+			"mensagem": "WhatsApp não está conectado",
+			"erro":     "Serviço temporariamente indisponível",
+		})
+		return
+	}
+
+	// Formatar número
+	jid, err := api.parseJID(req.Telefone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"sucesso":  false,
+			"mensagem": "Número de telefone inválido",
+			"erro":     err.Error(),
+		})
+		return
+	}
+
+	// Formatar mensagem
+	mensagem := api.formatarMensagemVerificacao(req)
+
+	// Log da operação
+	fmt.Printf("\n[VERIFICATION] ===== ENVIO DE VERIFICAÇÃO =====\n")
+	fmt.Printf("[CLIENT] Cliente: %s\n", req.NomeCliente)
+	fmt.Printf("[VENDOR] Vendedor: %s\n", req.NomeVendedor)
+	fmt.Printf("[PHONE] Telefone: %s → %s\n", req.Telefone, jid.String())
+	fmt.Printf("[CODE] Código: %s\n", req.CodigoVerificacao)
+	fmt.Printf("===============================================\n\n")
+
+	// Enviar mensagem
+	resp, err := api.Client.SendMessage(c.Request.Context(), jid, &waProto.Message{
+		Conversation: &mensagem,
+	})
+
+	if err != nil {
+		fmt.Printf("[ERROR] Erro ao enviar: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"sucesso":  false,
+			"mensagem": "Erro ao enviar mensagem",
+			"erro":     err.Error(),
+		})
+		return
+	}
+
+	// Gerar ID único para rastreamento
+	idMensagem := "msg_" + uuid.New().String()[:8]
+
+	fmt.Printf("[SUCCESS] Verificação enviada com sucesso!\n")
+	fmt.Printf("[ID] %s\n", idMensagem)
+	fmt.Printf("[TIME] Timestamp: %v\n\n", resp.Timestamp)
+
+	c.JSON(http.StatusOK, gin.H{
+		"sucesso":    true,
+		"mensagem":   "Mensagem enviada com sucesso",
+		"idMensagem": idMensagem,
+		"dataEnvio":  time.Now().Format(time.RFC3339),
+	})
+}
+
+// formatarMensagemVerificacao cria a mensagem formatada para o cliente
+func (api *API) formatarMensagemVerificacao(req VerificacaoRequest) string {
+	docFormatado := formatarDocumento(req.Documento)
+
+	mensagem := fmt.Sprintf(`🌾 *AgroSystem - Verificação de Cliente*
+
+Olá *%s*!
+
+Seu vendedor *%s* iniciou um cadastro para você.
+`, req.NomeCliente, req.NomeVendedor)
+
+	if req.Endereco != "" {
+		mensagem += fmt.Sprintf("\n📍 Endereço: %s", req.Endereco)
+	}
+
+	mensagem += fmt.Sprintf(`
+📄 Documento: %s
+
+🔐 Código de verificação: *%s*
+
+Por favor, compartilhe este código com seu vendedor para confirmar seus dados.
+
+_Válido por 15 minutos_`, docFormatado, req.CodigoVerificacao)
+
+	return mensagem
+}
+
+// formatarDocumento formata CPF ou CNPJ
+func formatarDocumento(doc string) string {
+	// Remover caracteres não numéricos
+	doc = strings.ReplaceAll(doc, ".", "")
+	doc = strings.ReplaceAll(doc, "-", "")
+	doc = strings.ReplaceAll(doc, "/", "")
+	doc = strings.TrimSpace(doc)
+
+	// Formatar CPF (11 dígitos)
+	if len(doc) == 11 {
+		return fmt.Sprintf("%s.%s.%s-%s", doc[0:3], doc[3:6], doc[6:9], doc[9:11])
+	}
+
+	// Formatar CNPJ (14 dígitos)
+	if len(doc) == 14 {
+		return fmt.Sprintf("%s.%s.%s/%s-%s", doc[0:2], doc[2:5], doc[5:8], doc[8:12], doc[12:14])
+	}
+
+	// Retornar original se não for CPF nem CNPJ
+	return doc
 }
 
 // Start inicia o servidor da API
