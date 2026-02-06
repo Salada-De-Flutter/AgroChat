@@ -12,6 +12,9 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
+
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 type API struct {
@@ -42,14 +45,25 @@ func NewAPI(client *whatsmeow.Client) *API {
 }
 
 // setupRoutes configura todas as rotas da API
+// @Summary Configuração de rotas
+// @Description Configura todas as rotas disponíveis na API
 func (api *API) setupRoutes() {
 	// Rota de health check
+	// @Summary Health check
+	// @Description Verifica se a API está funcionando
+	// @Tags System
+	// @Produce json
+	// @Success 200 {object} map[string]interface{} "API funcionando"
+	// @Router /health [get]
 	api.Router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
 			"message": "AgroChat API está rodando!",
 		})
 	})
+
+	// Documentação Swagger
+	api.Router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	// Grupo de rotas para WhatsApp
 	whatsapp := api.Router.Group("/whatsapp")
@@ -63,9 +77,23 @@ func (api *API) setupRoutes() {
 
 	// Endpoint principal para integração com AgroServer
 	api.Router.POST("/enviar-verificacao", api.enviarVerificacao)
+
+	// Rota simples para enviar mensagem
+	api.Router.POST("/enviar-mensagem", api.enviarMensagemSimples)
 }
 
 // sendMessage envia uma mensagem via WhatsApp
+// @Summary Envia mensagem via WhatsApp (endpoint antigo)
+// @Description Envia uma mensagem para um número de WhatsApp com verificações detalhadas
+// @Tags WhatsApp
+// @Accept json
+// @Produce json
+// @Param body body object{phone=string,message=string} true "Dados da mensagem"
+// @Success 200 {object} map[string]interface{} "Mensagem enviada com sucesso"
+// @Failure 400 {object} map[string]interface{} "Dados inválidos"
+// @Failure 500 {object} map[string]interface{} "Erro no servidor"
+// @Failure 503 {object} map[string]interface{} "WhatsApp não conectado"
+// @Router /whatsapp/send [post]
 func (api *API) sendMessage(c *gin.Context) {
 	var req struct {
 		Phone   string `json:"phone" binding:"required"`
@@ -135,6 +163,12 @@ func (api *API) sendMessage(c *gin.Context) {
 }
 
 // getStatus retorna o status da conexão do WhatsApp
+// @Summary Status da conexão WhatsApp
+// @Description Retorna informações sobre o status da conexão com o WhatsApp
+// @Tags WhatsApp
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Status da conexão"
+// @Router /whatsapp/status [get]
 func (api *API) getStatus(c *gin.Context) {
 	isConnected := api.Client.IsConnected()
 
@@ -211,6 +245,17 @@ type VerificacaoRequest struct {
 }
 
 // enviarVerificacao envia código de verificação via WhatsApp
+// @Summary Enviar código de verificação
+// @Description Envia código de verificação formatado para clientes do AgroServer
+// @Tags Verificação
+// @Accept json
+// @Produce json
+// @Param body body VerificacaoRequest true "Dados da verificação"
+// @Success 200 {object} map[string]interface{} "Verificação enviada com sucesso"
+// @Failure 400 {object} map[string]interface{} "Dados inválidos"
+// @Failure 500 {object} map[string]interface{} "Erro no servidor"
+// @Failure 503 {object} map[string]interface{} "WhatsApp não conectado"
+// @Router /enviar-verificacao [post]
 func (api *API) enviarVerificacao(c *gin.Context) {
 	var req VerificacaoRequest
 
@@ -352,6 +397,84 @@ func formatarDocumento(doc string) string {
 
 	// Retornar original se não for CPF nem CNPJ
 	return doc
+}
+
+// enviarMensagemSimples envia uma mensagem simples para um número
+// @Summary Enviar mensagem simples
+// @Description Envia uma mensagem de texto simples para um número de WhatsApp
+// @Tags Mensagens
+// @Accept json
+// @Produce json
+// @Param body body object{numero=string,mensagem=string} true "Número e mensagem"
+// @Success 200 {object} map[string]interface{} "Mensagem enviada com sucesso"
+// @Failure 400 {object} map[string]interface{} "Dados inválidos"
+// @Failure 500 {object} map[string]interface{} "Erro no servidor"
+// @Failure 503 {object} map[string]interface{} "WhatsApp não conectado"
+// @Router /enviar-mensagem [post]
+func (api *API) enviarMensagemSimples(c *gin.Context) {
+	var req struct {
+		Numero   string `json:"numero" binding:"required"`
+		Mensagem string `json:"mensagem" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"sucesso":  false,
+			"mensagem": "Dados inválidos",
+			"erro":     err.Error(),
+		})
+		return
+	}
+
+	// Verificar se está conectado
+	if !api.Client.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"sucesso":  false,
+			"mensagem": "WhatsApp não está conectado",
+			"erro":     "Serviço temporariamente indisponível",
+		})
+		return
+	}
+
+	// Formatar número
+	jid, err := api.parseJID(req.Numero)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"sucesso":  false,
+			"mensagem": "Número de telefone inválido",
+			"erro":     err.Error(),
+		})
+		return
+	}
+
+	// Log
+	fmt.Printf("\n[SEND] Enviando mensagem\n")
+	fmt.Printf("[TO] %s → %s\n", req.Numero, jid.String())
+	fmt.Printf("[MSG] %s\n\n", req.Mensagem)
+
+	// Enviar mensagem
+	resp, err := api.Client.SendMessage(c.Request.Context(), jid, &waProto.Message{
+		Conversation: &req.Mensagem,
+	})
+
+	if err != nil {
+		fmt.Printf("[ERROR] Erro ao enviar: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"sucesso":  false,
+			"mensagem": "Erro ao enviar mensagem",
+			"erro":     err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("[SUCCESS] Mensagem enviada!\n")
+	fmt.Printf("[TIME] Timestamp: %v\n\n", resp.Timestamp)
+
+	c.JSON(http.StatusOK, gin.H{
+		"sucesso":   true,
+		"mensagem":  "Mensagem enviada com sucesso",
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
 }
 
 // Start inicia o servidor da API

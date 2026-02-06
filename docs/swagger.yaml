@@ -1,0 +1,181 @@
+basePath: /
+definitions:
+  api.VerificacaoRequest:
+    properties:
+      codigoVerificacao:
+        type: string
+      documento:
+        type: string
+      endereco:
+        type: string
+      metodo:
+        type: string
+      nomeCliente:
+        type: string
+      nomeVendedor:
+        type: string
+      telefone:
+        type: string
+    required:
+    - codigoVerificacao
+    - documento
+    - metodo
+    - nomeCliente
+    - nomeVendedor
+    - telefone
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: suporte@agrochat.com
+    name: Suporte AgroChat
+  description: API para envio de mensagens via WhatsApp integrada ao AgroServer
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: AgroChat API
+  version: "1.0"
+paths:
+  /enviar-mensagem:
+    post:
+      consumes:
+      - application/json
+      description: Envia uma mensagem de texto simples para um número de WhatsApp
+      parameters:
+      - description: Número e mensagem
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            mensagem:
+              type: string
+            numero:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Mensagem enviada com sucesso
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Dados inválidos
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Erro no servidor
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: WhatsApp não conectado
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Enviar mensagem simples
+      tags:
+      - Mensagens
+  /enviar-verificacao:
+    post:
+      consumes:
+      - application/json
+      description: Envia código de verificação formatado para clientes do AgroServer
+      parameters:
+      - description: Dados da verificação
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.VerificacaoRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Verificação enviada com sucesso
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Dados inválidos
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Erro no servidor
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: WhatsApp não conectado
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Enviar código de verificação
+      tags:
+      - Verificação
+  /whatsapp/send:
+    post:
+      consumes:
+      - application/json
+      description: Envia uma mensagem para um número de WhatsApp com verificações
+        detalhadas
+      parameters:
+      - description: Dados da mensagem
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            message:
+              type: string
+            phone:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Mensagem enviada com sucesso
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Dados inválidos
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Erro no servidor
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: WhatsApp não conectado
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Envia mensagem via WhatsApp (endpoint antigo)
+      tags:
+      - WhatsApp
+  /whatsapp/status:
+    get:
+      description: Retorna informações sobre o status da conexão com o WhatsApp
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Status da conexão
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Status da conexão WhatsApp
+      tags:
+      - WhatsApp
+schemes:
+- http
+swagger: "2.0"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"agrochat/api"
+	_ "agrochat/docs"
 	"context"
 	"fmt"
 	"os"
@@ -18,6 +19,21 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
+
+// @title AgroChat API
+// @version 1.0
+// @description API para envio de mensagens via WhatsApp integrada ao AgroServer
+// @termsOfService http://swagger.io/terms/
+
+// @contact.name Suporte AgroChat
+// @contact.email suporte@agrochat.com
+
+// @license.name MIT
+// @license.url https://opensource.org/licenses/MIT
+
+// @host localhost:8080
+// @BasePath /
+// @schemes http
 
 // killPortProcess mata o processo que está usando a porta especificada
 func killPortProcess(port string) {
