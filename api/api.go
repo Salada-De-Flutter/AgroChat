@@ -479,5 +479,7 @@ func (api *API) enviarMensagemSimples(c *gin.Context) {
 
 // Start inicia o servidor da API
 func (api *API) Start(port string) error {
+	fmt.Printf("\n[INFO] API iniciada em http://localhost:%s\n", port)
+	fmt.Printf("[INFO] Documentação Swagger disponível em: http://localhost:%s/swagger/index.html\n\n", port)
 	return api.Router.Run(":" + port)
 }
